@@ -7,7 +7,7 @@ from py_near.account import Account
 
 master_account_id = globals()['env'].env_vars.get("master_account_id", None)
 master_private_key = globals()['env'].env_vars.get("master_private_key", None)
-contract_id = "chat.breadaily.near"  # Contract ID updated to match deployment
+contract_id = "dbread.near"  # Contract ID updated to match deployment
 
 def bytes_to_str(bytes_arr):
     """Convert bytes array to base58 string"""
@@ -51,6 +51,7 @@ async def test_contract_call(env: Environment):
         env.add_reply(f"Traceback: {traceback.format_exc()}")
 
 async def agent_response(env: Environment, data_id, response):
+    """Store a response in the contract for the given data_id"""
     try:
         # Create an account instance with master account credentials
         acc = Account(master_account_id, master_private_key)
@@ -59,25 +60,32 @@ async def agent_response(env: Environment, data_id, response):
         env.add_reply(f"Responding as account: {master_account_id}")
         env.add_reply(f"To contract: {contract_id}")
         
-        # Convert data_id array to base58 string (standard for NEAR CryptoHash)
+        # Convert data_id array to base58 string
         data_id_str = bytes_to_str(data_id)
         env.add_reply(f"data_id as base58: {data_id_str}")
         
-        # This format exactly matches what the CLI sends
-        json_str = '{"data_id": "' + data_id_str + '", "response": "' + response.replace('"', '\\"').replace('\n', '\\n') + '"}'
-        env.add_reply(f"Using CLI-like JSON string: {json_str}")
+        # Format response to handle special characters
+        escaped_response = response.replace('"', '\\"').replace('\n', '\\n')
         
-        # Call with the raw JSON string - NO serialization
+        # IMPORTANT: Fixed argument format - directly pass the expected structure
+        # without nesting under "args"
+        args = {
+            "data_id": data_id_str,
+            "response": escaped_response
+        }
+        
+        env.add_reply(f"Calling agent_response with args: {args}")
+        
         tr = await acc.function_call(
             contract_id,
             'agent_response',
-            json_str,  # Raw JSON string exactly like CLI
-            200000000000000,
+            args,  # Pass the correct format directly
+            300000000000000,  # Increased gas for safety
             0
         )
         
         env.add_reply(
-            f"Transaction created: [{tr.transaction.hash}](https://nearblocks.io/txns/{tr.transaction.hash})")
+            f"Response stored: [{tr.transaction.hash}](https://nearblocks.io/txns/{tr.transaction.hash})")
         return True
     except Exception as e:
         env.add_reply(f"Error in agent_response: {str(e)}")
@@ -127,7 +135,7 @@ async def simplified_agent_response(env: Environment, response):
             contract_id,
             'simple_agent_response',
             json_str,  # Raw JSON string exactly like CLI
-            200000000000000,
+            300000000000000,  # Increased gas
             0
         )
         
@@ -140,37 +148,53 @@ async def simplified_agent_response(env: Environment, response):
         return False
 
 async def public_agent_response(env: Environment, data_id, response):
-    """A version that uses the public response endpoint which doesn't check caller identity"""
+    """A version that uses the respond function to resume the yielded promise"""
     try:
         acc = Account(master_account_id, master_private_key)
         
-        env.add_reply(f"Using public agent response with account: {master_account_id}")
+        env.add_reply(f"Using respond function with account: {master_account_id}")
         
         # Convert data_id array to base58 string (standard for NEAR CryptoHash)
         data_id_str = bytes_to_str(data_id)
         env.add_reply(f"data_id as base58: {data_id_str}")
         
-        # This format exactly matches what the CLI sends but using public_agent_response
-        json_str = '{"response": "' + response.replace('"', '\\"').replace('\n', '\\n') + '"}'
-        env.add_reply(f"Using CLI-like JSON string with public endpoint: {json_str}")
+        # Prepare args as a Python dictionary - will be properly serialized
+        args = {
+            "yield_id": data_id_str,
+            "response": response
+        }
         
-        # Call the public endpoint that doesn't check caller identity
+        env.add_reply(f"Using args for respond function: {args}")
+        
+        # Call the respond function to resume the promise
         tr = await acc.function_call(
             contract_id,
-            'public_agent_response',
-            json_str,
-            200000000000000,
+            'respond',
+            args,
+            300000000000000,  # Increased gas
             0
         )
         
         env.add_reply(
-            f"Public agent response sent: [{tr.transaction.hash}](https://nearblocks.io/txns/{tr.transaction.hash})")
+            f"Response sent via respond function: [{tr.transaction.hash}](https://nearblocks.io/txns/{tr.transaction.hash})")
         return True
     except Exception as e:
-        env.add_reply(f"Public agent response failed: {str(e)}")
+        env.add_reply(f"Response via respond function failed: {str(e)}")
         import traceback
         env.add_reply(f"Traceback: {traceback.format_exc()}")
-        return False
+        # Try simplified as a fallback
+        try:
+            env.add_reply("⚠️ Trying simplified_agent_response as fallback...")
+            fallback_success = await simplified_agent_response(env, response)
+            if fallback_success:
+                env.add_reply("✅ Fallback response succeeded.")
+                return True
+            else:
+                env.add_reply("❌ All response methods failed.")
+                return False
+        except Exception as e2:
+            env.add_reply(f"Fallback also failed: {str(e2)}")
+            return False
 
 async def main(env: Environment):
     try:
@@ -198,21 +222,33 @@ async def main(env: Environment):
                     
                     env.add_reply(f"Generated AI response: {result}")
                     
-                    # Try the public agent response function that doesn't check identity
-                    env.add_reply("Using public_agent_response that doesn't check caller identity...")
-                    success = await public_agent_response(env, request_id, result)
+                    # Try all response methods in sequence until one works
+                    env.add_reply("Trying multiple response methods...")
                     
-                    if success:
-                        env.add_reply("✅ Public agent response succeeded! Your answer should be delivered.")
+                    # Method 1: Direct respond call
+                    env.add_reply("1. Trying 'respond' method first...")
+                    success1 = await public_agent_response(env, request_id, result)
+                    
+                    if success1:
+                        env.add_reply("✅ 'respond' method succeeded!")
+                        return
+                    
+                    # Method 2: Standard agent_response
+                    env.add_reply("2. Trying standard 'agent_response' method...")
+                    success2 = await agent_response(env, request_id, result)
+                    
+                    if success2:
+                        env.add_reply("✅ 'agent_response' method succeeded!")
+                        return
+                    
+                    # Method 3: Try simplified response
+                    env.add_reply("3. Trying simplified response method as final fallback...")
+                    success3 = await simplified_agent_response(env, result)
+                    
+                    if success3:
+                        env.add_reply("✅ Simplified method succeeded, but note that this doesn't connect to your original request_id.")
                     else:
-                        # Try simplified as a fallback
-                        env.add_reply("⚠️ Trying simplified_agent_response as fallback...")
-                        fallback_success = await simplified_agent_response(env, result)
-                        
-                        if fallback_success:
-                            env.add_reply("✅ Fallback response succeeded.")
-                        else:
-                            env.add_reply("❌ All response methods failed. Check contract configuration.")
+                        env.add_reply("❌ All response methods failed. Please check contract permissions and agent configuration.")
                 else:
                     env.add_reply("Invalid request format - missing event, user_message, or request_id")
             else:
@@ -230,12 +266,46 @@ async def main(env: Environment):
         import traceback
         env.add_reply(f"Traceback: {traceback.format_exc()}")
 
+# Add an agent health check that can be run directly
+async def health_check(env: Environment):
+    env.add_reply("Agent health check starting...")
+    
+    if not (master_account_id and master_private_key):
+        env.add_reply("❌ ERROR: Environment variables missing")
+        env.add_reply(f"master_account_id present: {master_account_id is not None}")
+        env.add_reply(f"master_private_key present: {master_private_key is not None}")
+        return False
+    
+    env.add_reply(f"✅ Environment variables present")
+    env.add_reply(f"Account ID: {master_account_id}")
+    env.add_reply(f"Contract ID: {contract_id}")
+    
+    # Attempt a simple test call
+    try:
+        await simple_test(env)
+        env.add_reply("✅ Simple test succeeded - agent can communicate with contract")
+        return True
+    except Exception as e:
+        env.add_reply(f"❌ Health check failed: {str(e)}")
+        import traceback
+        env.add_reply(f"Traceback: {traceback.format_exc()}")
+        return False
+
+# Main entry point
 if not (master_account_id and master_private_key):
-    env.add_reply("Agent wasn't initialized yet.")
+    env.add_reply("⚠️ Agent wasn't initialized yet.")
     env.add_reply(f"master_account_id present: {master_account_id is not None}")
     env.add_reply(f"master_private_key present: {master_private_key is not None}")
+    env.add_reply("Please make sure to set the environment variables in the NEAR AI Hub.")
+    env.add_reply("Required variables: master_account_id, master_private_key")
 else:
-    asyncio.run(main(env))
+    # Run the health check if the message is a health check request
+    message = env.get_last_message()
+    if message and message["content"] and "health check" in message["content"].lower():
+        asyncio.run(health_check(env))
+    else:
+        # Normal operation
+        asyncio.run(main(env))
 
 env.mark_done()
 
