@@ -1,0 +1,25 @@
+{
+  "name": "news-agent",
+  "version": "0.2.2",
+  "description": "test communicating with a smart contract",
+  "category": "agent",
+  "tags": [],
+  "details": {
+    "agent": {
+      "defaults": {
+        "model": "llama-v3p1-70b-instruct",
+        "model_provider": "fireworks",
+        "model_temperature": 1.0,
+        "model_max_tokens": 16384
+      },
+      "events": {
+        "chat.breadaily.near": {
+          "standard": "nearai",
+          "version": "0.1.0",
+          "events": ["run_agent"]
+        }
+      }
+    }
+  },
+  "show_entry": true
+}
