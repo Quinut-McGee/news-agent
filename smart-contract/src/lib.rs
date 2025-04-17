@@ -77,37 +77,37 @@ impl Contract {
         }
     }
 
-    pub fn query_agent(&mut self, prompt: String) -> PromiseOrValue<String> {
+    pub fn query_agent(&mut self, prompt: String) -> String {
         log!("Received query with prompt: {}", prompt);
         
-        // Create a promise to resume after the agent responds
-        let promise_idx = env::promise_yield_create(
-            "on_agent_response",
-            &prompt.as_bytes(),
-            MIN_RESPONSE_GAS,
-            GasWeight::default(),
-            DATA_ID_REGISTER,
-        );
+        // Generate a unique ID for this request
+        let mut rng_seed = env::random_seed();
+        let mut data_id: CryptoHash = [0; 32];
+        for i in 0..32 {
+            data_id[i] = rng_seed[i % rng_seed.len()];
+        }
 
-        // Get the data_id of the register with promises
-        let data_id: CryptoHash = env::read_register(DATA_ID_REGISTER)
-            .expect("Register is empty")
-            .try_into()
-            .expect("Wrong register length");
-
-        // Log the data_id clearly
-        log!("Generated request_id for agent: {:?}", data_id);
-        
         // Convert data_id to base58 for easier use by agents
         let data_id_base58 = bs58::encode(&data_id).into_string();
+        
+        // Log the data_id clearly
+        log!("Generated request_id for agent: {:?}", data_id);
         log!("Request ID as base58: {}", data_id_base58);
 
         // Emit the agent event with the prompt
         events::emit::run_agent(&self.agent_name, &prompt, Some(data_id));
+        
+        // Store an empty response to indicate the request is pending
+        self.responses.insert(
+            &data_id,
+            &AgentResponse {
+                request_id: data_id,
+                response: "PENDING".to_string(),
+            },
+        );
 
-        // Return the promise index to the caller
-        env::promise_return(promise_idx);
-        PromiseOrValue::Promise(Promise::new(env::current_account_id()))
+        // Return the base58 request ID that the caller can use to poll for results
+        format!("{{\"request_id\": \"{}\", \"status\": \"pending\"}}", data_id_base58)
     }
 
     pub fn agent_response(&mut self, args: AgentResponseArgs) {
@@ -174,7 +174,23 @@ impl Contract {
     ) -> Option<String> {
         if let Ok(response) = response.as_ref() {
             log!("Agent response received via yield resume: {}", response);
-            // Store the response in your preferred way
+            
+            // Generate a unique ID for this response
+            let mut rng_seed = env::random_seed();
+            let mut data_id: CryptoHash = [0; 32];
+            for i in 0..32 {
+                data_id[i] = rng_seed[i % rng_seed.len()];
+            }
+            
+            // Store the response for future retrieval
+            self.responses.insert(
+                &data_id,
+                &AgentResponse {
+                    request_id: data_id,
+                    response: response.clone(),
+                },
+            );
+            
             Some(response.clone())
         } else {
             log!("Response error or timeout");
