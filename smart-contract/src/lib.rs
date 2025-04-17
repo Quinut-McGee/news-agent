@@ -145,10 +145,12 @@ impl Contract {
             },
         );
 
-        // Resume the initial query transaction with the response
-        if !env::promise_yield_resume(&data_id_hash, &args.response.as_bytes()) {
-            env::panic_str("Unable to resume promise")
-        }
+        // Try to resume the promise if it exists
+        // This is now optional - will work with both old and new approaches
+        let _ = env::promise_yield_resume(&data_id_hash, &args.response.as_bytes());
+        
+        // Emit an event for the response
+        log!("Response stored successfully for request_id: {}", args.data_id);
     }
 
     // Add a simplified test function that only requires the response string
@@ -424,5 +426,38 @@ impl Contract {
         
         log!("Test response set for ID: {}", base58_id);
         format!("Test response set for ID: {}", base58_id)
+    }
+
+    pub fn query_agent_direct(&mut self, prompt: String) -> String {
+        log!("Processing direct query with async agent: {}", prompt);
+        
+        // Generate a unique ID for this request
+        let mut rng_seed = env::random_seed();
+        let mut data_id: CryptoHash = [0; 32];
+        for i in 0..32 {
+            data_id[i] = rng_seed[i % rng_seed.len()];
+        }
+
+        // Convert data_id to base58 for easier use by agents
+        let data_id_base58 = bs58::encode(&data_id).into_string();
+        
+        // Log the data_id
+        log!("Generated request_id for direct query: {:?}", data_id);
+        log!("Request ID as base58: {}", data_id_base58);
+
+        // Emit the agent event with the prompt
+        events::emit::run_agent(&self.agent_name, &prompt, Some(data_id));
+        
+        // Store an empty response placeholder
+        self.responses.insert(
+            &data_id,
+            &AgentResponse {
+                request_id: data_id,
+                response: "PENDING".to_string(),
+            },
+        );
+
+        // Return the base58 request ID that the frontend can use to poll for results
+        format!("{{\"request_id\": \"{}\", \"status\": \"pending\"}}", data_id_base58)
     }
 } 
